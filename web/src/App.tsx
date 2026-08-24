@@ -757,6 +757,7 @@ export function App() {
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
   const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(initialProjectId));
+  const [showInactive, setShowInactive] = useState(false);
   const [boardCardDisplay, setBoardCardDisplay] = useState<BoardCardDisplay>(readBoardCardDisplay);
   const [dashboardSummaryAnimatedProjectId, setDashboardSummaryAnimatedProjectId] = useState<string | null>(null);
   const [ganttZoom, setGanttZoom] = useState<GanttZoom>("week");
@@ -2239,6 +2240,8 @@ export function App() {
     (task) => matchesTaskSearch(task, search, language) && matchesTaskFilters(task, filters),
   ), [archivedTasks, filters, language, search]);
 
+  const visibleFilteredTasks = showInactive ? filteredArchivedTasks : filteredTasks;
+
   const activeFilterCount = taskFilterCount(filters);
   const hasActiveTaskFilters = Boolean(search.trim()) || activeFilterCount > 0;
 
@@ -2274,20 +2277,22 @@ export function App() {
 
   const tasksByStatus = useMemo(() => {
     return Object.fromEntries(
-      TASK_STATUSES.map((status) => [status, filteredTasks.filter((task) => task.status === status)]),
+      TASK_STATUSES.map((status) => [status, visibleFilteredTasks.filter((task) => task.status === status)]),
     ) as Record<TaskStatus, Task[]>;
-  }, [filteredTasks]);
+  }, [visibleFilteredTasks]);
 
   const hasBlockedTasks = tasks.some((task) => task.status === "blocked");
-  const mainStatuses = hasBlockedTasks
-    ? MAIN_STATUSES
-    : MAIN_STATUSES.filter((status) => status !== "blocked");
+  const mainStatuses = showInactive
+    ? TASK_STATUSES
+    : hasBlockedTasks
+      ? MAIN_STATUSES
+      : MAIN_STATUSES.filter((status) => status !== "blocked");
   const mainBoardMinWidth = (mainStatuses.length * 300) + ((mainStatuses.length - 1) * 24);
   const mainBoardMaxWidth = (mainStatuses.length * 400) + ((mainStatuses.length - 1) * 24);
   const otherTasksColumnCount = mainStatuses.length + 1;
   const otherTasksWidth = `clamp(300px, calc(${100 / otherTasksColumnCount}% - ${(36 + (mainStatuses.length * 24)) / otherTasksColumnCount}px), 400px)`;
 
-  const taskPresentations = useMemo(() => Object.fromEntries(tasks.map((task) => {
+  const taskPresentations = useMemo(() => Object.fromEntries(referenceTasks.map((task) => {
     const unread = (task.status === "in_review" || task.status === "blocked")
       && readActivityKeys[task.id] !== task.activityKey;
     const runningNativeThreadId = hostContext?.threadRunning
@@ -2309,7 +2314,7 @@ export function App() {
     hostContext?.threadRunning,
     hostContext?.threadTodoProgress,
     readActivityKeys,
-    tasks,
+    referenceTasks,
   ]);
   const hasRunningTask = useMemo(
     () => Object.values(taskPresentations).some((presentation) => presentation.processing.running),
@@ -2328,6 +2333,7 @@ export function App() {
     closeContextMenu();
     setGanttViewMenuOpen(false);
     setGithubOverviewVisible(false);
+    if (view !== "issues" && view !== "list") setShowInactive(false);
     setBoardView(view);
     if (selectedProjectId) {
       taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
@@ -3947,6 +3953,17 @@ export function App() {
             )}
           </div>
           {(boardView === "issues" || boardView === "list" || boardView === "gantt") && <div className="toolbar-tools">
+            {(boardView === "issues" || boardView === "list") && (
+              <button
+                className={`view-tab inactive-view-toggle${showInactive ? " active" : ""}`}
+                type="button"
+                aria-pressed={showInactive}
+                onClick={() => setShowInactive((current) => !current)}
+              >
+                <span>Inactive</span>
+                <span className="inactive-view-count">{archivedTasks.length}</span>
+              </button>
+            )}
             <div className={`search-field${search ? " has-value" : ""}`} title={text("搜索议题 (/)", "Search issues (/)")}>
               <TaskboardIcon className="search-icon" name="search" />
               <input
@@ -4000,20 +4017,20 @@ export function App() {
               </div>
             )}
             <TaskFilterMenu
-              tasks={tasks}
+              tasks={showInactive ? archivedTasks : tasks}
               search={search}
               labels={availableLabels}
               filters={filters}
               onChange={setFilters}
             />
-            {boardView === "issues" && (
+            {boardView === "issues" && !showInactive && (
               <BoardCardDisplayMenu
                 cover={boardCardDisplay.cover}
                 body={boardCardDisplay.body}
                 onChange={updateBoardCardDisplay}
               />
             )}
-            {boardView === "issues" && (
+            {boardView === "issues" && !showInactive && (
               <button
                 className={`other-tasks-trigger${otherTasksOpen ? " is-open" : ""}`}
                 type="button"
@@ -4146,10 +4163,11 @@ export function App() {
         ) : boardView === "list" ? (
           <IssueListView
             scrollRef={issueListRef}
-            tasks={filteredTasks}
+            tasks={visibleFilteredTasks}
             presentations={taskPresentations}
             currentUser={currentUser}
             hasActiveFilters={hasActiveTaskFilters}
+            readOnly={showInactive}
             onOpenTask={openTaskDetail}
             onOpenConversation={openTaskConversation}
             onUpdate={updateTaskProperties}
@@ -4169,7 +4187,7 @@ export function App() {
           </Suspense>
         ) : (
           <div
-            className={`issue-board-layout${otherTasksVisible ? " has-other-tasks" : ""}`}
+            className={`issue-board-layout${otherTasksVisible && !showInactive ? " has-other-tasks" : ""}`}
             data-main-columns={mainStatuses.length}
             style={{
               "--main-column-count": mainStatuses.length,
@@ -4215,6 +4233,7 @@ export function App() {
                         showCover={boardCardDisplay.cover}
                         showBody={boardCardDisplay.body}
                         createEnabled={!isAllProjects && !isJiraProject}
+                        readOnly={showInactive}
                         onCreateLabel={persistProjectLabel}
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
@@ -4230,7 +4249,7 @@ export function App() {
                     ))}
                   </div>
                 </div>
-                {otherTasksMounted && (
+                {otherTasksMounted && !showInactive && (
                   <OtherTasksPanel
                     open={otherTasksVisible}
                     activeTab={otherTasksTab}

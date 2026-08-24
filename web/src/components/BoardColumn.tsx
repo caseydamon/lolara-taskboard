@@ -38,6 +38,7 @@ interface BoardColumnProps {
   showCover: boolean;
   showBody: boolean;
   createEnabled?: boolean;
+  readOnly?: boolean;
   onCreateLabel: (label: string, projectId?: string) => Promise<void>;
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
@@ -70,6 +71,7 @@ export function BoardColumn({
   showCover,
   showBody,
   createEnabled = true,
+  readOnly = false,
   onCreateLabel,
   onCreate,
   onEdit,
@@ -131,8 +133,11 @@ export function BoardColumn({
     <section
       className={`board-column status-${status}${isDropTarget ? " is-drop-target" : ""}`}
       aria-labelledby={`column-${status}`}
-      onDragEnter={() => onDragEnter(status)}
+      onDragEnter={() => {
+        if (!readOnly) onDragEnter(status);
+      }}
       onDragOver={(event) => {
+        if (readOnly) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         onDragEnter(status);
@@ -143,7 +148,7 @@ export function BoardColumn({
           setDropBeforeTaskId(undefined);
         }
       }}
-      onDrop={handleDrop}
+      onDrop={readOnly ? undefined : handleDrop}
     >
       <header className="column-header">
         <div className="column-heading">
@@ -156,7 +161,7 @@ export function BoardColumn({
             ) ? ` ${tasks.length}` : ""}
           </h2>
         </div>
-        {createEnabled && (
+        {createEnabled && !readOnly && (
           <div className="column-actions">
             <button
               type="button"
@@ -198,6 +203,7 @@ export function BoardColumn({
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               onOpenConversation={onOpenConversation}
+              readOnly={readOnly}
             />
           );
         })}

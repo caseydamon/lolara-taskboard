@@ -18,6 +18,7 @@ interface IssueListViewProps {
   presentations: Record<string, TaskCardPresentation>;
   currentUser: ActorIdentity;
   hasActiveFilters: boolean;
+  readOnly?: boolean;
   onOpenTask: (task: Task) => void;
   onOpenConversation: (conversation: TaskCardPresentation["conversations"][number]) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
@@ -38,6 +39,7 @@ export function IssueListView({
   presentations,
   currentUser,
   hasActiveFilters,
+  readOnly = false,
   onOpenTask,
   onOpenConversation,
   onUpdate,
@@ -96,7 +98,7 @@ export function IssueListView({
                           {presentations[task.id]?.unread && <span className="task-unread-dot" aria-label={text("有未读更新", "Unread updates")} />}
                         </span>
                         <span className="issue-list-metadata" aria-label={text("议题属性", "Issue properties")}>
-                          <span className="issue-list-priority-control" onClick={stopRow} onKeyDown={stopRow}>
+                          {!readOnly && <span className="issue-list-priority-control" onClick={stopRow} onKeyDown={stopRow}>
                             <TaskPropertyPicker
                               value={task.priority}
                               options={TASK_PRIORITIES.map((priority) => ({
@@ -112,7 +114,7 @@ export function IssueListView({
                               onOpenChange={(open) => setPriorityMenuTaskId(open ? task.id : null)}
                               onChange={(priority) => void onUpdate(task, { priority }).catch(() => {})}
                             />
-                          </span>
+                          </span>}
                           <span className="issue-list-labels">
                             {task.labels.slice(0, 2).map((label) => {
                               const presentation = labelPresentation(label, language);
@@ -133,6 +135,7 @@ export function IssueListView({
                                 type="date"
                                 aria-label={text(`${displayIdentifier} 截止日期`, `${displayIdentifier} due date`)}
                                 value={task.dueDate}
+                                disabled={readOnly}
                                 onChange={(event) => void onUpdate(task, {
                                   dueDate: event.target.value || null,
                                   ...(event.target.value ? {} : { recurrence: null }),
@@ -149,7 +152,7 @@ export function IssueListView({
                             <select
                               aria-label={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
                               value={assigneeTarget}
-                              disabled={task.source === "jira"}
+                              disabled={readOnly || task.source === "jira"}
                               onChange={(event) => void onUpdate(task, { assigneeTarget: event.target.value as "current-user" | "codex-agent" }).catch(() => {})}
                             >
                               <option value="current-user">{currentUser.name}</option>
