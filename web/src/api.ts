@@ -15,6 +15,7 @@ import type {
   ComposerTurnInput,
   CodexThreadBinding,
   DevelopmentScan,
+  GithubRepositoryCatalog,
   HostContext,
   IssueRelationOrigin,
   IssueRelationType,
@@ -233,6 +234,10 @@ export async function getHostRuntime(signal?: AbortSignal): Promise<HostContext 
         }
       : {}),
   };
+}
+
+export async function listGithubRepositories(signal?: AbortSignal): Promise<GithubRepositoryCatalog> {
+  return request<GithubRepositoryCatalog>("/api/local/github/repositories", { signal });
 }
 
 export async function getCodexThreadProgress(
@@ -484,6 +489,20 @@ export async function createProject(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+  return data.project;
+}
+
+export async function updateProject(
+  projectId: string,
+  input: { workspacePath?: string | null },
+): Promise<Project> {
+  const data = await request<{ project: Project }>(
+    `/api/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
   return data.project;
 }
 

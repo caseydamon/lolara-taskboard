@@ -31,6 +31,7 @@ import {
   getTask,
   getTaskboardRevision,
   getTaskboardMetadata,
+  listGithubRepositories,
   listArchivedTasks,
   listDevelopmentContexts,
   listDeviceWorkspaces,
@@ -46,6 +47,7 @@ import {
   setCurrentUserActor,
   syncJiraConnection,
   uploadAttachment,
+  updateProject as updateProjectRequest,
   updateTask as updateTaskRequest,
 } from "./api";
 import {
@@ -122,6 +124,8 @@ import {
   type CodexProjectIdentity,
   type CodexThreadBinding,
   type DevelopmentScan,
+  type GithubRepositoryCatalog,
+  type GithubRepositorySummary,
   type HostContext,
   type IssueRelationOrigin,
   type IssueRelationType,
@@ -139,6 +143,7 @@ import { createRevisionPoller, getRevisionPollingInterval } from "./revisionPoll
 type ConnectionState = "connecting" | "live" | "reconnecting";
 type Theme = "light" | "dark";
 type BoardView = "readme" | "dashboard" | "issues" | "list" | "gantt";
+type SourceView = "all" | "chatgpt" | "github";
 type DetailSourceScroll =
   | { projectId: string; view: "issues"; status: TaskStatus; scrollTop: number }
   | { projectId: string; view: "list"; scrollTop: number };
@@ -303,6 +308,8 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 
 const GLOBAL_PROJECT_ID = "local";
 const ALL_PROJECTS_ID = "__all_projects__";
+const CHATGPT_SYNC_PROJECT_ID = "chatgpt-account-tasks";
+const GITHUB_SYNC_PROJECT_ID = "github-caseydamon-lolara-taskboard";
 const RECENT_PROJECT_IDS_KEY = "taskboard.recentProjectIds.v1";
 const PROJECT_VIEW_KEY_PREFIX = "taskboard.project-view.v1.";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
@@ -311,6 +318,10 @@ const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
 const BOARD_CARD_DISPLAY_KEY = "taskboard.board-card-display.v1";
 const ISSUE_READ_KEY_PREFIX = "taskboard.issue-read.v1";
 const FIRST_USE_COMPLETE_KEY = "taskboard.first-use-complete.v1";
+
+function githubProjectIdForRepository(fullName: string): string {
+  return `github-${fullName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+}
 function readIssueActivityKeys(storageKey: string): Record<string, string> {
   try {
     const value = JSON.parse(taskboardStorage.getItem(storageKey) ?? "{}");
@@ -551,12 +562,17 @@ function taskToDraft(task: Task): TaskDraft {
     description: task.description,
     status: task.status,
     priority: task.priority,
+    category: task.category,
     labels: task.labels,
     developmentContext: task.developmentContext,
     startDate: task.startDate,
     dueDate: task.dueDate,
     recurrence: task.recurrence,
   };
+}
+
+function sourceConversationThreadId(task: Pick<Task, "description">): string | null {
+  return task.description.match(/taskboard-sync:chatgpt-thread:([0-9a-f-]+)/i)?.[1] ?? null;
 }
 
 interface LocalRealtimeSyncProps {
@@ -719,6 +735,10 @@ export function App() {
   const [recentProjectIds, setRecentProjectIds] = useState(readRecentProjectIds);
   const initialProjectId = query.get("project") ?? recentProjectIds[0] ?? ALL_PROJECTS_ID;
   const [projects, setProjects] = useState<Project[]>([]);
+  const [githubCatalog, setGithubCatalog] = useState<GithubRepositoryCatalog | null>(null);
+  const [githubCatalogLoading, setGithubCatalogLoading] = useState(false);
+  const [githubCatalogError, setGithubCatalogError] = useState<string | null>(null);
+  const [githubOverviewVisible, setGithubOverviewVisible] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
@@ -870,6 +890,63 @@ export function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const isAllProjects = selectedProjectId === ALL_PROJECTS_ID;
+  const activeGithubProjectIds = new Set([
+    GITHUB_SYNC_PROJECT_ID,
+    ...(githubCatalog?.repositories.map((repository) => repository.taskboardProjectId) ?? []),
+  ]);
+  const isGithubProject = activeGithubProjectIds.has(selectedProjectId);
+  const selectedSourceView: SourceView = selectedProjectId === CHATGPT_SYNC_PROJECT_ID
+    ? "chatgpt"
+    : isGithubProject
+      ? "github"
+      : "all";
+  const githubProjectCount = projects
+    .filter((project) => activeGithubProjectIds.has(project.id))
+    .reduce((total, project) => total + project.issueCount, 0);
+  const sourceViewOptions: Array<{
+    value: SourceView;
+    label: string;
+    projectId: string;
+    count: number;
+  }> = [
+    {
+      value: "all",
+      label: text("全部来源", "All sources"),
+      projectId: ALL_PROJECTS_ID,
+      count: projects.reduce((total, project) => total + project.issueCount, 0),
+    },
+    {
+      value: "chatgpt",
+      label: "ChatGPT",
+      projectId: CHATGPT_SYNC_PROJECT_ID,
+      count: projects.find((project) => project.id === CHATGPT_SYNC_PROJECT_ID)?.issueCount ?? 0,
+    },
+    {
+      value: "github",
+      label: "GitHub",
+      projectId: GITHUB_SYNC_PROJECT_ID,
+      count: githubProjectCount,
+    },
+  ];
+  useEffect(() => {
+    if (selectedSourceView !== "github") return;
+    const controller = new AbortController();
+    setGithubCatalogLoading(true);
+    setGithubCatalogError(null);
+    void listGithubRepositories(controller.signal).then(
+      (catalog) => {
+        if (controller.signal.aborted) return;
+        setGithubCatalog(catalog);
+        setGithubCatalogLoading(false);
+      },
+      (error) => {
+        if (controller.signal.aborted) return;
+        setGithubCatalogError(errorMessage(error));
+        setGithubCatalogLoading(false);
+      },
+    );
+    return () => controller.abort();
+  }, [selectedSourceView]);
   const isJiraProject = selectedProject?.source === "jira";
   const automationModels = automationCatalog && automationCatalog.projectId === selectedProject?.id
     ? automationCatalog.models
@@ -877,7 +954,7 @@ export function App() {
   useEffect(() => {
     setAutomationCatalog(null);
     setAutomationCatalogError(null);
-    if (!selectedProject || !localAiChatAvailable) {
+    if (!selectedProject || !localAiChatAvailable || !embedded || window.parent === window) {
       setAutomationCatalogLoading(false);
       return;
     }
@@ -2131,6 +2208,7 @@ export function App() {
         && !isJiraProject
       ) {
         event.preventDefault();
+        setGithubOverviewVisible(false);
         setEditor({ task: null, status: "todo" });
       }
       if (
@@ -2249,6 +2327,7 @@ export function App() {
   function selectBoardView(view: BoardView) {
     closeContextMenu();
     setGanttViewMenuOpen(false);
+    setGithubOverviewVisible(false);
     setBoardView(view);
     if (selectedProjectId) {
       taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
@@ -2536,11 +2615,11 @@ export function App() {
 
   async function updateTaskProperties(task: Task, changes: Partial<TaskDraft>): Promise<Task> {
     const previous = task;
-    const { assigneeTarget, ...taskChanges } = changes;
-    const optimisticAssignee = assigneeTarget
-      ? actorForAssigneeTarget(assigneeTarget, currentUser)
-      : task.assignee;
-    const optimisticParticipants = assigneeTarget
+    const { assignee, assigneeTarget, ...taskChanges } = changes;
+    const optimisticAssignee = assignee
+      ?? (assigneeTarget ? actorForAssigneeTarget(assigneeTarget, currentUser) : task.assignee);
+    const assigneeChanged = Boolean(assignee || assigneeTarget);
+    const optimisticParticipants = assigneeChanged
       && !task.participants.some((participant) => actorKey(participant) === actorKey(optimisticAssignee))
       ? [...task.participants, optimisticAssignee]
       : task.participants;
@@ -2557,7 +2636,7 @@ export function App() {
         candidate.id === updated.id ? updated : candidate,
       )));
       const previousAssigneeTarget = assigneeTargetForActor(previous.assignee, currentUser);
-      if (!assigneeTarget || previousAssigneeTarget) {
+      if (!assigneeChanged || previousAssigneeTarget) {
         pushUndo(
           null,
           () => restoreTaskDetails(previous, updated, previousAssigneeTarget),
@@ -2827,6 +2906,19 @@ export function App() {
     window.location.assign(`codex://threads/${encodeURIComponent(threadId.trim())}`);
   }
 
+  function openSourceConversation(threadId: string) {
+    const normalized = threadId.trim();
+    if (!normalized) return;
+    if (embedded && window.parent !== window) {
+      postEmbeddedHostMessage({
+        type: "taskboard:open-thread",
+        payload: { threadId: normalized },
+      });
+      return;
+    }
+    window.location.assign(`https://chatgpt.com/c/${encodeURIComponent(normalized)}`);
+  }
+
   function openTaskConversation(conversation: TaskConversationItem) {
     if (conversation.kind === "local-ai" && conversation.aiThreadId) {
       setAiOpenThreadRequest((current) => ({
@@ -3088,6 +3180,11 @@ export function App() {
   }
 
   async function openTaskInThread(task: Task) {
+    const sourceThreadId = sourceConversationThreadId(task);
+    if (sourceThreadId) {
+      openSourceConversation(sourceThreadId);
+      return;
+    }
     const standalone = !embedded || window.parent === window;
     const projectless = task.projectId === GLOBAL_PROJECT_ID;
     const taskboardProject = projects.find((project) => project.id === task.projectId);
@@ -3252,6 +3349,60 @@ export function App() {
     setUndoNotice(null);
     const url = buildIssueUrl(window.location.href, projectId, null);
     window.history.replaceState(null, "", url);
+  }
+
+  function changeSourceView(sourceView: SourceView) {
+    const target = sourceViewOptions.find((option) => option.value === sourceView);
+    if (!target) return;
+    setGithubOverviewVisible(sourceView === "github");
+    if (target.projectId === selectedProjectId) return;
+    changeProject(target.projectId);
+  }
+
+  function openGithubOverview() {
+    closeContextMenu();
+    setGanttViewMenuOpen(false);
+    setDetailTaskIdentifier(null);
+    setGithubOverviewVisible(true);
+    if (selectedProjectId) {
+      const url = buildIssueUrl(window.location.href, selectedProjectId, null);
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }
+
+  async function openGithubRepository(repository: GithubRepositorySummary) {
+    if (openingProjectId) return;
+    const projectId = repository.taskboardProjectId || githubProjectIdForRepository(repository.fullName);
+    setOpeningProjectId(projectId);
+    setActionError(null);
+    try {
+      let project = projects.find((candidate) => candidate.id === projectId) ?? null;
+      if (!project) {
+        const createdProject = await createProjectRequest({
+          id: projectId,
+          name: `GitHub · ${repository.fullName}`,
+          workspacePath: repository.workspacePath,
+        });
+        project = createdProject;
+        setProjects((current) => current.some((candidate) => candidate.id === createdProject.id)
+          ? current
+          : [...current, createdProject]);
+      } else if (repository.workspacePath && project.workspacePath !== repository.workspacePath) {
+        project = await updateProjectRequest(project.id, { workspacePath: repository.workspacePath });
+        setProjects((current) => current.map((candidate) => (
+          candidate.id === project!.id ? project! : candidate
+        )));
+      }
+      if (repository.workspacePath) rememberDeviceWorkspacePath(project.id, repository.workspacePath);
+      changeProject(project.id);
+      setGithubOverviewVisible(false);
+      setBoardView("issues");
+      taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${project.id}`, "issues");
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setOpeningProjectId(null);
+    }
   }
 
   async function selectProject(choice: ProjectChoice) {
@@ -3435,6 +3586,113 @@ export function App() {
     }
   }
 
+  const githubRepositories = githubCatalog?.repositories ?? [];
+  const githubWritableCount = githubRepositories.filter((repository) => (
+    repository.permissions.push || repository.permissions.admin || repository.permissions.maintain
+  )).length;
+  const githubOverview = selectedSourceView === "github" && githubOverviewVisible && !detailTask ? (
+    <section className="github-overview" aria-label="GitHub repositories">
+      <header className="github-overview-header">
+        <div>
+          <span>GitHub</span>
+          <h1>{githubCatalog?.account ?? "caseydamon"}</h1>
+          <p>{text(
+            "已授权仓库会显示在这里，可选择仓库进入对应的 Taskboard 项目。",
+            "Authorized repositories appear here. Choose one to manage it as a Taskboard project.",
+          )}</p>
+        </div>
+        <div className="github-overview-stats" aria-label="GitHub repository totals">
+          <div>
+            <strong>{githubRepositories.length}</strong>
+            <span>{text("仓库", "Repositories")}</span>
+          </div>
+          <div>
+            <strong>{githubWritableCount}</strong>
+            <span>{text("可写", "Writable")}</span>
+          </div>
+          <div>
+            <strong>{githubCatalog?.updatedAt ? new Date(githubCatalog.updatedAt).toLocaleTimeString() : "—"}</strong>
+            <span>{text("同步时间", "Synced")}</span>
+          </div>
+        </div>
+      </header>
+
+      {githubCatalogLoading && !githubCatalog ? (
+        <div className="github-overview-empty">{text("正在读取 GitHub 仓库…", "Loading GitHub repositories…")}</div>
+      ) : githubCatalogError ? (
+        <div className="github-overview-empty">
+          <strong>{text("无法读取 GitHub 仓库", "Could not load GitHub repositories")}</strong>
+          <span>{githubCatalogError}</span>
+        </div>
+      ) : githubRepositories.length === 0 ? (
+        <div className="github-overview-empty">
+          <strong>{text("还没有可管理的 GitHub 仓库", "No GitHub repositories to manage yet")}</strong>
+          <span>{text(
+            "同步脚本还没有写入仓库目录，或当前 GitHub 账号没有已授权仓库。",
+            "The sync has not written a repository catalog yet, or the current GitHub account has no authorized repositories.",
+          )}</span>
+        </div>
+      ) : (
+        <div className="github-repository-grid">
+          {githubRepositories.map((repository) => {
+            const project = projects.find((candidate) => candidate.id === repository.taskboardProjectId);
+            const issueCount = project?.issueCount ?? repository.openIssues ?? 0;
+            const writable = repository.permissions.push || repository.permissions.admin || repository.permissions.maintain;
+            return (
+              <article className="github-repository-card" key={repository.fullName}>
+                <header>
+                  <div>
+                    <span>{repository.owner}</span>
+                    <h2>{repository.name}</h2>
+                  </div>
+                  <span className={`github-repository-access${writable ? " writable" : ""}`}>
+                    {writable ? text("可写", "Writable") : text("只读", "Read-only")}
+                  </span>
+                </header>
+                <p>{repository.description || text("暂无仓库描述", "No repository description")}</p>
+                <dl>
+                  <div>
+                    <dt>{text("默认分支", "Default branch")}</dt>
+                    <dd>{repository.defaultBranch ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>{text("Issues", "Issues")}</dt>
+                    <dd>{issueCount}</dd>
+                  </div>
+                  <div>
+                    <dt>{text("PR", "PRs")}</dt>
+                    <dd>{repository.openPullRequests ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>{text("权限", "Permissions")}</dt>
+                    <dd>{[
+                      repository.permissions.admin ? "admin" : null,
+                      repository.permissions.push ? "push" : null,
+                      repository.permissions.triage ? "triage" : null,
+                    ].filter(Boolean).join(" · ") || "pull"}</dd>
+                  </div>
+                </dl>
+                <footer>
+                  <button
+                    className="button primary"
+                    type="button"
+                    disabled={openingProjectId === repository.taskboardProjectId}
+                    onClick={() => void openGithubRepository(repository)}
+                  >
+                    {project ? text("打开看板", "Open board") : text("加入看板", "Add to board")}
+                  </button>
+                  <a className="button secondary" href={repository.url} target="_blank" rel="noreferrer">
+                    GitHub
+                  </a>
+                </footer>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  ) : null;
+
   const headerProjectName = isAllProjects
     ? text("所有项目", "All projects")
     : selectedProject?.id === GLOBAL_PROJECT_ID
@@ -3573,6 +3831,20 @@ export function App() {
                   </div>
                 )}
               </div>
+              <label className="source-view-switcher">
+                <span>{text("来源", "Source")}</span>
+                <select
+                  value={selectedSourceView}
+                  aria-label={text("切换任务来源页面", "Switch task source page")}
+                  onChange={(event) => changeSourceView(event.target.value as SourceView)}
+                >
+                  {sourceViewOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}{option.count > 0 ? ` (${option.count})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           </div>
 
@@ -3606,7 +3878,10 @@ export function App() {
               <button
                 className="icon-button header-create-button"
                 type="button"
-                onClick={() => setEditor({ task: null, status: "todo" })}
+                onClick={() => {
+                  setGithubOverviewVisible(false);
+                  setEditor({ task: null, status: "todo" });
+                }}
                 aria-label={text("新建议题", "Create issue")}
                 title={text("新建议题 (C)", "Create issue (C)")}
               >
@@ -3618,6 +3893,16 @@ export function App() {
 
         {selectedProjectId && !detailTask && <div className="board-toolbar">
           <div className="view-tabs" aria-label={text("看板视图", "Board views")}>
+            {selectedSourceView === "github" && (
+              <button
+                className={`view-tab${githubOverviewVisible ? " active" : ""}`}
+                type="button"
+                aria-pressed={githubOverviewVisible}
+                onClick={openGithubOverview}
+              >
+                {text("总览", "Overview")}
+              </button>
+            )}
             <button
               className={`view-tab${boardView === "dashboard" ? " active" : ""}`}
               type="button"
@@ -3766,7 +4051,7 @@ export function App() {
           </div>
         )}
 
-        {detailTask && selectedProject ? (
+        {githubOverview ?? (detailTask && selectedProject ? (
           <TaskDetail
             key={detailTask.id}
             task={detailTask}
@@ -3825,7 +4110,10 @@ export function App() {
               <button
                 className="button secondary"
                 type="button"
-                onClick={() => setEditor({ task: null, status: "todo" })}
+                onClick={() => {
+                  setGithubOverviewVisible(false);
+                  setEditor({ task: null, status: "todo" });
+                }}
               >
                 {text("添加议题", "Add issue")}
               </button>
@@ -3984,7 +4272,7 @@ export function App() {
               </>
             )}
           </div>
-        )}
+        ))}
       </main>
 
       {projectContextMenu && (

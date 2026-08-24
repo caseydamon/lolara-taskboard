@@ -27,7 +27,7 @@ import {
   useTaskboardI18n,
   type TaskboardLanguage,
 } from "../i18n";
-import { TASK_PRIORITIES, TASK_STATUSES } from "../types";
+import { TASK_CATEGORIES, TASK_PRIORITIES, TASK_STATUSES } from "../types";
 import type {
   ActorIdentity,
   Attachment,
@@ -97,6 +97,7 @@ import { postEmbeddedHostMessage } from "../embeddedHost.mjs";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
 import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
 import { DescriptionDocument } from "./DescriptionDocument";
+import { inferTaskCategory, taskCategoryLabel } from "../taskCategories";
 
 type TaskDetailError = string | readonly [string, string];
 
@@ -180,6 +181,25 @@ function fileSize(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
   return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function sourceConversationThreadId(task: Pick<Task, "description">): string | null {
+  return task.description.match(/taskboard-sync:chatgpt-thread:([0-9a-f-]+)/i)?.[1] ?? null;
+}
+
+function customAssigneeId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const fallback = Array.from(name.trim())
+    .map((character) => character.codePointAt(0)?.toString(36) ?? "")
+    .join("")
+    .slice(0, 24);
+  return `custom-${slug || fallback || Date.now().toString(36)}`;
 }
 
 async function downloadAttachmentFile(attachment: Attachment) {
@@ -393,7 +413,7 @@ export function TaskDetail({
   );
   const [editingDescription, setEditingDescription] = useState(false);
   const [propertyMenu, setPropertyMenu] = useState<
-    "status" | "priority" | "assignee" | "labels" | "development" | "recurrence" | null
+    "status" | "priority" | "category" | "assignee" | "labels" | "development" | "recurrence" | null
   >(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -434,6 +454,15 @@ export function TaskDetail({
   const commentInlineImages = inlineMediaImages(commentSegments);
   const editingDraft = serializeInlineMedia(editingSegments);
   const displayIdentifier = currentTask.externalKey ?? currentTask.identifier;
+  const currentCategory = inferTaskCategory(currentTask);
+  const sourceThreadId = sourceConversationThreadId(currentTask);
+  const openThreadActionLabel = sourceThreadId
+    ? openingThread
+      ? text("正在打开来源会话…", "Opening source conversation…")
+      : text("回到来源会话", "Open source conversation")
+    : openingThread
+      ? text("正在打开…", "Opening…")
+      : text("新建处理会话", "Start task conversation");
   const editingInlineImages = inlineMediaImages(editingSegments);
 
   useEffect(() => {
@@ -982,7 +1011,14 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [
+    currentTask.assignee,
+    currentUser,
+    CODEX_AGENT_ACTOR,
+    ...tasks
+      .filter((task) => task.projectId === currentTask.projectId)
+      .map((task) => task.assignee),
+  ]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
@@ -1605,10 +1641,14 @@ export function TaskDetail({
               <button
                 className="detail-open-thread-action"
                 type="button"
+                title={sourceThreadId
+                  ? text("打开原始 ChatGPT 会话", "Open the original ChatGPT conversation")
+                  : text("创建用于处理此任务的新会话", "Create a new conversation for this task")}
                 disabled={openingThread}
                 onClick={() => onOpenInThread(currentTask)}
               >
                 <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
+                <span className="detail-source-thread-label">{openThreadActionLabel}</span>
                 <span>{openingThread
                   ? text("正在打开…", "Opening…")
                   : text("在新对话打开", "Open in new conversation")}</span>
@@ -1706,6 +1746,31 @@ export function TaskDetail({
                 onChange={(priority) => void saveTask({ priority }, "priority")}
               />
             </div>
+            <div className="detail-property-row">
+              <span className="detail-property-label">{text("类别", "Category")}</span>
+              <TaskPropertyPicker
+                value={currentCategory ?? ""}
+                options={[
+                  {
+                    value: "",
+                    label: taskCategoryLabel(null, language),
+                    icon: <ProjectIcon color="currentColor" size={14} />,
+                  },
+                  ...TASK_CATEGORIES.map((category) => ({
+                    value: category,
+                    label: taskCategoryLabel(category, language),
+                    icon: <ProjectIcon color="currentColor" size={14} />,
+                  })),
+                ]}
+                open={propertyMenu === "category"}
+                disabled={savingProperty === "category"}
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel={text("类别", "Category")}
+                onOpenChange={(open) => setPropertyMenu(open ? "category" : null)}
+                onChange={(category) => void saveTask({ category: category || null }, "category")}
+              />
+            </div>
             <div className="detail-property-row assignee-property">
               <span className="detail-property-label">{text("负责人", "Assignee")}</span>
               <TaskPropertyPicker
@@ -1718,6 +1783,22 @@ export function TaskDetail({
                   icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
                 }))}
                 open={propertyMenu === "assignee"}
+                createAction={{
+                  label: text("创建自定义用户", "Create custom user"),
+                  icon: <ProjectIcon color="currentColor" size={14} />,
+                  placeholder: text("输入用户名", "User name"),
+                  confirmLabel: text("创建", "Create"),
+                  cancelLabel: text("取消", "Cancel"),
+                  onCreate: (trimmed) => {
+                    const assignee: ActorIdentity = {
+                      type: "user",
+                      id: customAssigneeId(trimmed),
+                      name: trimmed.slice(0, 120),
+                      avatarUrl: null,
+                    };
+                    void saveTask({ assignee }, "assignee");
+                  },
+                }}
                 disabled={currentTask.source === "jira" || savingProperty === "assignee"}
                 className="detail-property-picker"
                 triggerClassName="detail-property-trigger"
@@ -1729,6 +1810,7 @@ export function TaskDetail({
                     ? assigneeTargetForActor(selected, currentUser)
                     : undefined;
                   if (assigneeTarget) void saveTask({ assigneeTarget }, "assignee");
+                  else if (selected) void saveTask({ assignee: selected }, "assignee");
                 }}
               />
             </div>

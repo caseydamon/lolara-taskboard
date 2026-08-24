@@ -27,6 +27,15 @@ interface TaskPropertyPickerProps<Value extends string> {
   triggerContent?: ReactNode;
   ariaLabel: string;
   title?: string;
+  createAction?: {
+    label: string;
+    icon: ReactNode;
+    placeholder?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    onClick?: () => void;
+    onCreate?: (value: string) => void;
+  };
   onOpenChange: (open: boolean) => void;
   onChange: (value: Value) => void;
 }
@@ -41,6 +50,7 @@ export function TaskPropertyPicker<Value extends string>({
   triggerContent,
   ariaLabel,
   title,
+  createAction,
   onOpenChange,
   onChange,
 }: TaskPropertyPickerProps<Value>) {
@@ -49,6 +59,8 @@ export function TaskPropertyPicker<Value extends string>({
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const [creatingValue, setCreatingValue] = useState("");
+  const [creatingOpen, setCreatingOpen] = useState(false);
   const selected = options.find((option) => option.value === value) ?? options[0];
   const portalTarget = triggerRef.current?.closest("dialog, [role='dialog']") ?? document.body;
 
@@ -94,6 +106,16 @@ export function TaskPropertyPicker<Value extends string>({
     }
   }
 
+  function submitCreateAction() {
+    const trimmed = creatingValue.trim();
+    if (!trimmed || !createAction?.onCreate) return;
+    createAction.onCreate(trimmed);
+    setCreatingValue("");
+    setCreatingOpen(false);
+    onOpenChange(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  }
+
   useLayoutEffect(() => {
     if (!open) return;
     const trigger = triggerRef.current;
@@ -115,6 +137,8 @@ export function TaskPropertyPicker<Value extends string>({
     if (!open) return;
     const nextIndex = Math.max(0, options.findIndex((option) => option.value === value));
     setFocusedIndex(nextIndex);
+    setCreatingOpen(false);
+    setCreatingValue("");
     requestAnimationFrame(() => optionElements()[nextIndex]?.focus({ preventScroll: true }));
   }, [open]);
 
@@ -182,6 +206,60 @@ export function TaskPropertyPicker<Value extends string>({
             )}
           </button>
         ))}
+        {createAction && creatingOpen && createAction.onCreate ? (
+          <div
+            className="task-property-create-form"
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitCreateAction();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setCreatingOpen(false);
+                setCreatingValue("");
+              }
+            }}
+          >
+            <input
+              autoFocus
+              value={creatingValue}
+              placeholder={createAction.placeholder}
+              onChange={(event) => setCreatingValue(event.target.value)}
+            />
+            <div className="task-property-create-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatingOpen(false);
+                  setCreatingValue("");
+                }}
+              >
+                {createAction.cancelLabel ?? "Cancel"}
+              </button>
+              <button type="button" disabled={!creatingValue.trim()} onClick={submitCreateAction}>
+                {createAction.confirmLabel ?? "Create"}
+              </button>
+            </div>
+          </div>
+        ) : createAction && (
+          <button
+            type="button"
+            className="task-property-option task-property-create-option"
+            onClick={() => {
+              if (createAction.onCreate) {
+                setCreatingOpen(true);
+                return;
+              }
+              onOpenChange(false);
+              createAction.onClick?.();
+            }}
+          >
+            <span className="task-property-option-icon">{createAction.icon}</span>
+            <span className="task-property-option-label">{createAction.label}</span>
+          </button>
+        )}
       </div>
     </div>,
     portalTarget,

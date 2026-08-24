@@ -387,6 +387,12 @@ function parseLabels(value) {
   return labels;
 }
 
+function parseCategory(value) {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return stringField(value, "category", { required: true, maxLength: 64 });
+}
+
 function parseStatus(value, fallback) {
   const result = value ?? fallback;
   if (!isTaskStatus(result)) {
@@ -431,6 +437,26 @@ function parseProjectCreate(body) {
     throw new ApiError(400, "INVALID_FIELD", "'workspacePath' cannot contain null bytes");
   }
   return { id, name, workspacePath };
+}
+
+function parseProjectPatch(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["workspacePath"]));
+  const changes = {};
+  if (Object.hasOwn(body, "workspacePath")) {
+    const workspacePath = stringField(body.workspacePath ?? null, "workspacePath", { nullable: true, maxLength: 4096 });
+    if (workspacePath === "") {
+      throw new ApiError(400, "INVALID_FIELD", "'workspacePath' cannot be empty");
+    }
+    if (workspacePath?.includes("\0")) {
+      throw new ApiError(400, "INVALID_FIELD", "'workspacePath' cannot contain null bytes");
+    }
+    changes.workspacePath = workspacePath;
+  }
+  if (Object.keys(changes).length === 0) {
+    throw new ApiError(400, "INVALID_BODY", "PATCH requires at least one project field");
+  }
+  return changes;
 }
 
 function parseProjectLabel(body) {
@@ -568,6 +594,36 @@ function parseAssigneeTarget(value) {
   return value;
 }
 
+function parseAssigneeActor(value) {
+  if (value === undefined) return undefined;
+  assertPlainObject(value);
+  assertAllowedKeys(value, new Set(["type", "id", "name", "avatarUrl"]));
+  const type = value.type;
+  if (type !== "user" && type !== "agent") {
+    throw new ApiError(400, "INVALID_FIELD", "'assignee.type' must be user or agent");
+  }
+  const id = stringField(value.id, "assignee.id", { required: true, maxLength: 120 });
+  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(id)) {
+    throw new ApiError(400, "INVALID_FIELD", "'assignee.id' contains unsupported characters");
+  }
+  const name = stringField(value.name, "assignee.name", { required: true, maxLength: 120 });
+  let avatarUrl = null;
+  if (value.avatarUrl !== null && value.avatarUrl !== undefined) {
+    const rawAvatarUrl = stringField(value.avatarUrl, "assignee.avatarUrl", { required: true, maxLength: 2048 });
+    let parsed;
+    try {
+      parsed = new URL(rawAvatarUrl);
+    } catch {
+      throw new ApiError(400, "INVALID_FIELD", "'assignee.avatarUrl' is invalid");
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new ApiError(400, "INVALID_FIELD", "'assignee.avatarUrl' must use HTTP or HTTPS");
+    }
+    avatarUrl = parsed.toString();
+  }
+  return { type, id, name, avatarUrl };
+}
+
 function resolveAssignee(target, actor) {
   if (target === undefined) return actor;
   if (target === "codex-agent") return CODEX_AGENT_ACTOR;
@@ -580,8 +636,8 @@ function resolveAssignee(target, actor) {
 function parseTaskCreate(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
-    "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId", "threadBinding",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "projectId", "title", "description", "status", "priority", "category", "labels", "sortOrder", "threadId", "threadBinding",
+    "assigneeTarget", "assignee", "developmentContext", "startDate", "dueDate", "recurrence",
   ]));
   const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
   const task = {
@@ -590,11 +646,13 @@ function parseTaskCreate(body) {
     description: stringField(body.description ?? "", "description", { maxLength: 100_000 }),
     status: parseStatus(body.status, "backlog"),
     priority: parsePriority(body.priority, "none"),
+    category: parseCategory(body.category ?? null),
     labels: body.labels === undefined ? [] : parseLabels(body.labels),
     sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
+    assignee: parseAssigneeActor(body.assignee),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
@@ -609,20 +667,23 @@ function parseTaskCreate(body) {
 function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
-    "version", "projectId", "title", "description", "status", "priority", "labels", "threadId", "threadBinding",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "version", "projectId", "title", "description", "status", "priority", "category", "labels", "threadId", "threadBinding",
+    "assigneeTarget", "assignee", "developmentContext", "startDate", "dueDate", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
   const threadBinding = parseThreadBinding(body.threadBinding);
   const assigneeTarget = parseAssigneeTarget(body.assigneeTarget);
+  const assignee = parseAssigneeActor(body.assignee);
   const changes = {};
   if (body.projectId !== undefined) changes.projectId = validateProjectId(body.projectId);
   if (body.title !== undefined) changes.title = stringField(body.title, "title", { required: true, maxLength: 240 });
   if (body.description !== undefined) changes.description = stringField(body.description, "description", { maxLength: 100_000 });
   if (body.status !== undefined) changes.status = parseStatus(body.status);
   if (body.priority !== undefined) changes.priority = parsePriority(body.priority);
+  if (body.category !== undefined) changes.category = parseCategory(body.category);
   if (body.labels !== undefined) changes.labels = parseLabels(body.labels);
+  if (assignee !== undefined) changes.assignee = assignee;
   if (body.developmentContext !== undefined) changes.developmentContext = parseDevelopmentContext(body.developmentContext);
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
@@ -2075,6 +2136,57 @@ export function createTaskboardServer(options = {}) {
         return methodNotAllowed(response, ["GET", "PUT"]);
       }
 
+      if (pathname === "/api/local/github/repositories") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        assertNoQuery(url.searchParams, "GET /api/local/github/repositories");
+        const repositoriesPath = path.join(resolved.dataDirectory, "github-repositories.json");
+        let payload = { account: null, repositories: [], updatedAt: null };
+        try {
+          const raw = JSON.parse(await readFile(repositoriesPath, "utf8"));
+          if (raw && typeof raw === "object" && Array.isArray(raw.repositories)) {
+            payload = {
+              account: typeof raw.account === "string" ? raw.account : null,
+              updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+              repositories: raw.repositories.filter((repository) => (
+                repository
+                && typeof repository.fullName === "string"
+                && typeof repository.name === "string"
+                && typeof repository.owner === "string"
+              )).map((repository) => ({
+                id: typeof repository.id === "string" || typeof repository.id === "number"
+                  ? String(repository.id)
+                  : repository.fullName,
+                name: repository.name,
+                owner: repository.owner,
+                fullName: repository.fullName,
+                description: typeof repository.description === "string" ? repository.description : null,
+                url: typeof repository.url === "string" ? repository.url : `https://github.com/${repository.fullName}`,
+                visibility: repository.visibility === "private" ? "private" : "public",
+                defaultBranch: typeof repository.defaultBranch === "string" ? repository.defaultBranch : null,
+                archived: repository.archived === true,
+                permissions: {
+                  admin: repository.permissions?.admin === true,
+                  maintain: repository.permissions?.maintain === true,
+                  pull: repository.permissions?.pull === true,
+                  push: repository.permissions?.push === true,
+                  triage: repository.permissions?.triage === true,
+                },
+                taskboardProjectId: typeof repository.taskboardProjectId === "string"
+                  ? repository.taskboardProjectId
+                  : `github-${repository.fullName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+                workspacePath: typeof repository.workspacePath === "string" ? repository.workspacePath : null,
+                openIssues: Number.isInteger(repository.openIssues) ? repository.openIssues : null,
+                openPullRequests: Number.isInteger(repository.openPullRequests) ? repository.openPullRequests : null,
+                updatedAt: typeof repository.updatedAt === "string" ? repository.updatedAt : null,
+              })),
+            };
+          }
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        return sendJson(response, 200, payload);
+      }
+
       if (pathname === "/api/local/cloud-session") {
         if ([...url.searchParams.keys()].length > 0) {
           throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Cloud session routes do not accept query parameters");
@@ -2414,11 +2526,16 @@ export function createTaskboardServer(options = {}) {
           throw new ApiError(400, "INVALID_PATH", "Project id contains invalid encoding");
         }
         validateProjectId(projectId);
+        if (request.method === "PATCH") {
+          const project = database.updateProject(projectId, parseProjectPatch(await readJson(request)));
+          events.emit("project.updated", { project });
+          return sendJson(response, 200, { project });
+        }
         if (request.method === "DELETE") {
           database.deleteProject(projectId);
           return sendEmpty(response, 204);
         }
-        return methodNotAllowed(response, ["DELETE"]);
+        return methodNotAllowed(response, ["PATCH", "DELETE"]);
       }
 
       const projectLabelsRoute = pathname.match(/^\/api\/projects\/([^/]+)\/labels$/);
@@ -2583,7 +2700,7 @@ export function createTaskboardServer(options = {}) {
         }
         if (request.method === "POST") {
           const actor = actorFromRequest(request);
-          const { assigneeTarget, ...parsedInput } = parseTaskCreate(await readJson(request));
+          const { assigneeTarget, assignee, ...parsedInput } = parseTaskCreate(await readJson(request));
           const input = resolveInputThreadBinding(parsedInput);
           if (input.projectId === JIRA_PROJECT_ID) {
             throw new ApiError(
@@ -2595,7 +2712,7 @@ export function createTaskboardServer(options = {}) {
           const task = database.createTask({
             ...input,
             actor,
-            assignee: resolveAssignee(assigneeTarget, actor),
+            assignee: assignee ?? resolveAssignee(assigneeTarget, actor),
           });
           events.emit("task.created", { task });
           return sendJson(response, 201, { task });
@@ -2980,7 +3097,7 @@ export function createTaskboardServer(options = {}) {
             if (Object.hasOwn(changes, "projectId")) {
               throw new ApiError(409, "JIRA_PROJECT_MOVE_UNAVAILABLE", "Jira 任务不能移到本地项目");
             }
-            if (assigneeTarget !== undefined) {
+            if (assigneeTarget !== undefined || Object.hasOwn(changes, "assignee")) {
               throw new ApiError(409, "JIRA_ASSIGNEE_UNAVAILABLE", "请在 Jira 中修改经办人");
             }
             const dueDate = Object.hasOwn(changes, "dueDate") ? changes.dueDate : current.dueDate;
