@@ -29,8 +29,8 @@
   --success: #43bc58;
   --priority-urgent: #ff7236;
   --priority-high: #ff7236;
-  --priority-medium: var(--text-tertiary);
-  --priority-low: var(--text-tertiary);
+  --priority-medium: #f0bf00;
+  --priority-low: #43bc58;
   --priority-none: var(--text-tertiary);
   --status-backlog: #9e9ea1;
   --status-todo: #9e9ea1;
@@ -9289,6 +9289,21 @@ kbd {
   overflow: hidden;
   color: var(--text-secondary);
   text-overflow: ellipsis;
+}
+
+.task-card .label-chip {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.task-card .label-chip > span {
+  color: #fff;
+}
+
+.task-card .label-chip i {
+  background: #fff;
+  color: #fff;
 }
 
 .due-date-chip {
