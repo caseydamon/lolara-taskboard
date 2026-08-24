@@ -8,6 +8,7 @@ import {
   type TaskboardLanguage,
 } from "../i18n";
 import {
+  TASK_CATEGORIES,
   TASK_PRIORITIES,
   TASK_STATUSES,
   type ActorIdentity,
@@ -19,6 +20,7 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "../types";
+import { inferTaskCategory, taskCategoryLabel } from "../taskCategories";
 import {
   CODEX_AGENT_ACTOR,
   actorKey,
@@ -90,6 +92,7 @@ export interface NewTaskEditorDraft {
   descriptionSegments: InlineMediaSegment[];
   status: TaskStatus;
   priority: TaskPriority;
+  category: string | null;
   assignee: ActorIdentity;
   selectedLabels: string[];
   developmentContext: DevelopmentContext | null;
@@ -191,6 +194,7 @@ export function TaskEditor({
   );
   const [status, setStatus] = useState<TaskStatus>(task?.status ?? initialStatus);
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? initialDraft?.priority ?? "none");
+  const [category, setCategory] = useState<string | null>(task ? inferTaskCategory(task) : initialDraft?.category ?? null);
   const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? initialDraft?.assignee ?? currentUser);
   const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? initialDraft?.selectedLabels ?? []);
   const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? initialDraft?.developmentContext ?? null);
@@ -201,7 +205,7 @@ export function TaskEditor({
   const [relatedIds, setRelatedIds] = useState<string[]>(initialDraft?.relations.relatedIds ?? []);
   const [subIssueIds, setSubIssueIds] = useState<string[]>(initialDraft?.relations.subIssueIds ?? []);
   const [createMore, setCreateMore] = useState(false);
-  const [menu, setMenu] = useState<"project" | "status" | "priority" | "assignee" | "labels" | "development" | "more" | "due" | "recurrence" | null>(null);
+  const [menu, setMenu] = useState<"project" | "status" | "priority" | "category" | "assignee" | "labels" | "development" | "more" | "due" | "recurrence" | null>(null);
   const [relationMenu, setRelationMenu] = useState<DraftRelationMenu | null>(null);
   const [moreMenuPosition, setMoreMenuPosition] = useState<{ right: number; bottom: number } | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -396,6 +400,7 @@ export function TaskEditor({
         description: descriptionValue,
         status,
         priority,
+        category,
         labels: selectedLabels,
         ...(assigneeTarget ? { assigneeTarget } : {}),
         developmentContext,
@@ -473,9 +478,10 @@ export function TaskEditor({
     onCancel(task ? null : {
       title,
       descriptionSegments,
-      status,
-      priority,
-      assignee,
+        status,
+        priority,
+        category,
+        assignee,
       selectedLabels,
       developmentContext,
       startDate,
@@ -631,6 +637,26 @@ export function TaskEditor({
               ariaLabel={text("优先级", "Priority")}
               onOpenChange={(open) => setMenu(open ? "priority" : null)}
               onChange={setPriority}
+            />
+            <TaskPropertyPicker
+              value={category ?? ""}
+              options={[
+                {
+                  value: "",
+                  label: taskCategoryLabel(null, language),
+                  icon: <TaskboardIcon name="filter" />,
+                },
+                ...TASK_CATEGORIES.map((value) => ({
+                  value,
+                  label: taskCategoryLabel(value, language),
+                  icon: <TaskboardIcon name="filter" />,
+                })),
+              ]}
+              open={menu === "category"}
+              triggerClassName="property-control"
+              ariaLabel={text("类别", "Category")}
+              onOpenChange={(open) => setMenu(open ? "category" : null)}
+              onChange={(value) => setCategory(value || null)}
             />
             <TaskPropertyPicker
               value={actorKey(assignee)}

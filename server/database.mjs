@@ -227,6 +227,7 @@ function taskFromRow(row) {
     description: row.description,
     status: row.status,
     priority: row.priority,
+    category: row.category ?? null,
     labels: JSON.parse(row.labels),
     sortOrder: row.sort_order,
     threadId: row.thread_id,
@@ -449,6 +450,7 @@ export class TaskboardDatabase {
           'backlog', 'todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled'
         )),
         priority TEXT NOT NULL CHECK (priority IN ('none', 'urgent', 'high', 'medium', 'low')),
+        category TEXT,
         labels TEXT NOT NULL DEFAULT '[]',
         sort_order REAL NOT NULL,
         thread_id TEXT,
@@ -676,6 +678,9 @@ export class TaskboardDatabase {
     }
     if (!taskColumns.some((column) => column.name === "recurrence_unit")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN recurrence_unit TEXT");
+    }
+    if (!taskColumns.some((column) => column.name === "category")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN category TEXT");
     }
     this.#migrateTaskStatuses();
     const migratedTaskColumns = this.database.prepare("PRAGMA table_info(tasks)").all();
@@ -1057,6 +1062,25 @@ export class TaskboardDatabase {
     return this.getProject(input.id);
   }
 
+  updateProject(id, changes) {
+    const assignments = [];
+    const values = [];
+    if (Object.hasOwn(changes, "workspacePath")) {
+      assignments.push("workspace_path = ?");
+      values.push(changes.workspacePath);
+    }
+    if (assignments.length === 0) return this.getProject(id);
+    assignments.push("updated_at = ?");
+    values.push(now(), id);
+    const result = this.database.prepare(`
+      UPDATE projects SET ${assignments.join(", ")} WHERE id = ?
+    `).run(...values);
+    if (result.changes === 0) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${id}' does not exist`);
+    }
+    return this.getProject(id);
+  }
+
   ensureJiraProject(name) {
     const timestamp = now();
     this.database.prepare(`
@@ -1127,7 +1151,7 @@ export class TaskboardDatabase {
       }
       const insertTask = this.database.prepare(`
         INSERT INTO tasks (
-          id, identifier, project_id, title, description, status, priority, labels,
+          id, identifier, project_id, title, description, status, priority, category, labels,
           sort_order, thread_id, thread_codex_project_id, thread_codex_project_kind,
           thread_codex_host_id, thread_workspace_path,
           creator_type, creator_id, creator_name, creator_avatar_url,
@@ -1892,7 +1916,7 @@ export class TaskboardDatabase {
           git_branch, worktree_path, worktree_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -1901,6 +1925,7 @@ export class TaskboardDatabase {
         input.description,
         input.status,
         input.priority,
+        input.category ?? null,
         JSON.stringify(input.labels),
         sortOrder,
         ...(storedThreadBinding(input.threadBinding, input.threadId) ?? [null, null, null, null, null]),
@@ -1975,6 +2000,7 @@ export class TaskboardDatabase {
       description: "description",
       status: "status",
       priority: "priority",
+      category: "category",
       labels: "labels",
       startDate: "start_date",
       dueDate: "due_date",

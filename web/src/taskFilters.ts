@@ -5,16 +5,20 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "./types";
+import { actorKey } from "./actors";
 import { labelDisplayName } from "./labels";
 import type { TaskboardLanguage } from "./i18n";
+import { inferTaskCategory, taskCategoryLabel } from "./taskCategories";
 
 export type TaskLinkFilter = "all" | "linked" | "unlinked";
-export type TaskFilterKey = "statuses" | "priorities" | "labels" | "link" | "content";
+export type TaskFilterKey = "statuses" | "priorities" | "categories" | "labels" | "assignees" | "link" | "content";
 
 export interface TaskFilters {
   statuses: TaskStatus[];
   priorities: TaskPriority[];
+  categories: string[];
   labels: string[];
+  assignees: string[];
   link: TaskLinkFilter;
   content: string;
 }
@@ -22,7 +26,9 @@ export interface TaskFilters {
 export const EMPTY_TASK_FILTERS: TaskFilters = {
   statuses: [],
   priorities: [],
+  categories: [],
   labels: [],
+  assignees: [],
   link: "all",
   content: "",
 };
@@ -44,7 +50,9 @@ export function readTaskFilters(): TaskFilters {
   return {
     statuses,
     priorities,
+    categories: params.getAll("category").filter(Boolean),
     labels: params.getAll("label").filter(Boolean),
+    assignees: params.getAll("assignee").filter(Boolean),
     link: linkValue === "yes" ? "linked" : linkValue === "no" ? "unlinked" : "all",
     content: params.get("content") ?? "",
   };
@@ -62,6 +70,12 @@ export function writeTaskFilters(filters: TaskFilters) {
   url.searchParams.delete("label");
   filters.labels.forEach((label) => url.searchParams.append("label", label));
 
+  url.searchParams.delete("category");
+  filters.categories.forEach((category) => url.searchParams.append("category", category));
+
+  url.searchParams.delete("assignee");
+  filters.assignees.forEach((assignee) => url.searchParams.append("assignee", assignee));
+
   if (filters.link === "linked") url.searchParams.set("linked", "yes");
   else if (filters.link === "unlinked") url.searchParams.set("linked", "no");
   else url.searchParams.delete("linked");
@@ -75,7 +89,9 @@ export function writeTaskFilters(filters: TaskFilters) {
 export function taskFilterCount(filters: TaskFilters): number {
   return Number(filters.statuses.length > 0)
     + Number(filters.priorities.length > 0)
+    + Number(filters.categories.length > 0)
     + Number(filters.labels.length > 0)
+    + Number(filters.assignees.length > 0)
     + Number(filters.link !== "all")
     + Number(Boolean(filters.content.trim()));
 }
@@ -88,6 +104,9 @@ export function matchesTaskSearch(task: Task, search: string, language: Taskboar
     task.externalKey,
     task.title,
     task.description,
+    taskCategoryLabel(inferTaskCategory(task), language),
+    task.assignee.name,
+    task.assignee.id,
     ...task.labels,
     ...task.labels.map((label) => labelDisplayName(label, language)),
   ]
@@ -108,9 +127,23 @@ export function matchesTaskFilters(
     return false;
   }
   if (
+    omit !== "categories"
+    && filters.categories.length
+    && !filters.categories.includes(inferTaskCategory(task) ?? "")
+  ) {
+    return false;
+  }
+  if (
     omit !== "labels"
     && filters.labels.length
     && !filters.labels.some((label) => task.labels.includes(label))
+  ) {
+    return false;
+  }
+  if (
+    omit !== "assignees"
+    && filters.assignees.length
+    && !filters.assignees.includes(actorKey(task.assignee))
   ) {
     return false;
   }

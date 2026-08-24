@@ -8,9 +8,23 @@ export const TASK_STATUSES = [
   "canceled",
 ] as const;
 export const TASK_PRIORITIES = ["none", "urgent", "high", "medium", "low"] as const;
+export const TASK_CATEGORIES = [
+  "web",
+  "code",
+  "spreadsheet",
+  "document",
+  "image",
+  "video",
+  "copy",
+  "research",
+  "automation",
+  "action",
+  "task",
+] as const;
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+export type TaskCategory = (typeof TASK_CATEGORIES)[number];
 export type ActorType = "user" | "agent";
 export type AssigneeTarget = "current-user" | "codex-agent";
 export type IssueRelationType = "parent" | "blocks" | "blocked_by" | "related";
@@ -341,6 +355,36 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface GithubRepositorySummary {
+  id: string;
+  name: string;
+  owner: string;
+  fullName: string;
+  description: string | null;
+  url: string;
+  visibility: "public" | "private";
+  defaultBranch: string | null;
+  archived: boolean;
+  permissions: {
+    admin: boolean;
+    maintain: boolean;
+    pull: boolean;
+    push: boolean;
+    triage: boolean;
+  };
+  taskboardProjectId: string;
+  workspacePath: string | null;
+  openIssues: number | null;
+  openPullRequests: number | null;
+  updatedAt: string | null;
+}
+
+export interface GithubRepositoryCatalog {
+  account: string | null;
+  repositories: GithubRepositorySummary[];
+  updatedAt: string | null;
+}
+
 export interface ProjectSummary {
   projectId: string;
   summary: string | null;
@@ -407,6 +451,7 @@ export interface Task {
   description: string;
   status: TaskStatus;
   priority: TaskPriority;
+  category: TaskCategory | string | null;
   labels: string[];
   sortOrder: number;
   threadId: string | null;
@@ -521,8 +566,10 @@ export interface TaskDraft {
   description: string;
   status: TaskStatus;
   priority: TaskPriority;
+  category: TaskCategory | string | null;
   labels: string[];
   assigneeTarget?: AssigneeTarget;
+  assignee?: ActorIdentity;
   developmentContext: DevelopmentContext | null;
   startDate: string | null;
   dueDate: string | null;
